@@ -237,6 +237,38 @@ def test_estimator_batching(
     )
 
 
+@pytest.mark.parametrize("task", ["classification", "regression"])
+def test_tiled_fit_predict(task: Literal["classification", "regression"]) -> None:
+    baseline = _build(task, "small")
+    tiled = KumoTabular(
+        task=task,
+        size="small",
+        pretrained=False,
+        fit_context_query_tile_size=2,
+    )
+    tiled.load_state_dict(baseline.state_dict())
+    x_context, x_query = _features()
+    target = _cls_target() if task == "classification" else _reg_target()
+
+    baseline.fit(
+        x_context,
+        target,
+        num_estimators=4,
+        generator=torch.Generator().manual_seed(0),
+    )
+    tiled.fit(
+        x_context,
+        target,
+        num_estimators=4,
+        generator=torch.Generator().manual_seed(0),
+    )
+    expected = baseline.predict(x_query)
+    actual = tiled.predict(x_query)
+
+    assert actual.columns == expected.columns
+    torch.testing.assert_close(actual.numerical, expected.numerical)
+
+
 def test_fit_predict(
     cls_model: KumoTabular,
     reg_model: KumoTabular,

@@ -101,6 +101,12 @@ class KumoTabular(ICLModel):
         pretrained: Whether to load pretrained checkpoints.
         device: The device for model parameters. If ``None``, uses PyTorch's
             default device.
+        fit_context_query_tile_size: Maximum context query rows per attention
+            call while recording the fit cache in inference mode. ``None``
+            lets the attention budget choose the tile size.
+        fit_context_attention_budget_bytes: Maximum estimated attention score
+            tensor size during fit. Defaults to 4 GiB. ``None`` disables the
+            budget; the explicit tile size can still limit query rows.
     """
 
     supported_feature_stypes: ClassVar[frozenset[Stype]] = frozenset(
@@ -119,6 +125,8 @@ class KumoTabular(ICLModel):
         size: Literal["small", "medium", "large"] = "large",
         pretrained: bool = True,
         device: torch.device | str | None = None,
+        fit_context_query_tile_size: int | None = None,
+        fit_context_attention_budget_bytes: int | None = 4 * 1024**3,
     ) -> None:
         super().__init__(task=task)
         if Task.classification in self.tasks:
@@ -130,6 +138,10 @@ class KumoTabular(ICLModel):
                 num_classes=10 if task == Task.classification else 0,
                 num_quantiles=999 if task == Task.regression else 0,
                 device="meta" if pretrained else device,
+                fit_context_query_tile_size=fit_context_query_tile_size,
+                fit_context_attention_budget_bytes=(
+                    fit_context_attention_budget_bytes
+                ),
                 **MODEL_KWARGS[size],
             )
 
@@ -262,6 +274,8 @@ class _KumoTabular(torch.nn.Module):
         num_icl_layers: int = 12,
         num_icl_heads: int = 8,
         num_icl_key_value_heads_for_query: int | None = None,
+        fit_context_query_tile_size: int | None = None,
+        fit_context_attention_budget_bytes: int | None = 4 * 1024**3,
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
     ) -> None:
@@ -294,6 +308,10 @@ class _KumoTabular(torch.nn.Module):
             num_layers=num_icl_layers,
             num_heads=num_icl_heads,
             num_key_value_heads_for_query=num_icl_key_value_heads_for_query,
+            fit_context_query_tile_size=fit_context_query_tile_size,
+            fit_context_attention_budget_bytes=(
+                fit_context_attention_budget_bytes
+            ),
             **factory_kwargs,
         )
 

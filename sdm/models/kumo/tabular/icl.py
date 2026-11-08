@@ -3,6 +3,7 @@
 
 # ruff: noqa: D101, D102
 
+import math
 from typing import Any, cast
 
 import torch
@@ -23,12 +24,29 @@ class ICLBlock(torch.nn.Module):
         num_layers: int,
         num_heads: int,
         num_key_value_heads_for_query: int | None = None,
+        fit_context_query_tile_size: int | None = None,
+        fit_context_attention_budget_bytes: int | None = 4 * 1024**3,
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__()
+        if (
+            fit_context_query_tile_size is not None
+            and fit_context_query_tile_size <= 0
+        ):
+            raise ValueError("fit_context_query_tile_size must be positive")
+        if (
+            fit_context_attention_budget_bytes is not None
+            and fit_context_attention_budget_bytes <= 0
+        ):
+            raise ValueError("fit_context_attention_budget_bytes must be positive")
         factory_kwargs: dict[str, Any] = {"device": device, "dtype": dtype}
         self.kv_heads = num_key_value_heads_for_query
+        self.fit_context_query_tile_size = fit_context_query_tile_size
+        self.fit_context_attention_budget_bytes = (
+            fit_context_attention_budget_bytes
+        )
+        self.num_heads = num_heads
 
         self.y_emb: torch.nn.Module | None = None
         self.y_lin: torch.nn.Module | None = None
@@ -85,9 +103,80 @@ class ICLBlock(torch.nn.Module):
             x[..., :R_train, :] += y_emb.to(x.dtype)
             del y_emb
 
+        tile_size = self.fit_context_query_tile_size
+        if (
+            self.fit_context_attention_budget_bytes is not None
+            and cache is not None
+            and cache.is_recording
+            and not self.training
+            and not torch.is_grad_enabled()
+            and train_size is None
+            and R_train > 0
+            and x.size(-2) == R_train
+        ):
+            score_bytes_per_query = (
+                math.prod(x.shape[:-2])
+                * self.num_heads
+                * R_train
+                * x.element_size()
+            )
+            budget_tile = (
+                self.fit_context_attention_budget_bytes
+                // score_bytes_per_query
+            )
+            if budget_tile == 0:
+                raise ValueError(
+                    "fit_context_attention_budget_bytes is too small for "
+                    "one context query row"
+                )
+            if budget_tile < R_train:
+                # Large MPS query tiles can stall even within the score budget.
+                tile_size = min(tile_size or R_train, budget_tile, 512)
+
         for i, layer in enumerate(self.layers):
             cache_key = f"icl_block.layer{i}"
             last_layer = i == len(self.layers) - 1
+
+            if (
+                tile_size is not None
+                and tile_size < R_train
+                and cache is not None
+                and cache.is_recording
+                and not self.training
+                and not torch.is_grad_enabled()
+                and train_size is None
+                and R_train > 0
+                and x.size(-2) == R_train
+            ):
+                query_end = min(tile_size, R_train)
+                output = x.new_empty(x.shape) if not last_layer else None
+                _, kv = layer(
+                    query=x[..., :query_end, :],
+                    key_value=x[..., :R_train, :],
+                    return_key_value=True,
+                    out=None if last_layer else output[..., :query_end, :],
+                )
+                if not last_layer:
+                    assert output is not None
+                    for start in range(query_end, R_train, tile_size):
+                        end = min(start + tile_size, R_train)
+                        layer(
+                            query=x[..., start:end, :],
+                            key_value=kv,
+                            out=output[..., start:end, :],
+                        )
+                    x = output
+                else:
+                    x = x[..., :0, :]
+                key, value = kv
+                kv_heads = self.kv_heads
+                if kv_heads is not None and kv_heads < key.size(-2):
+                    key, value = _copy_key_value(
+                        key=key[..., :kv_heads, :],
+                        value=value[..., :kv_heads, :],
+                    )
+                cache[cache_key] = KVCacheEntry(key, value)
+                continue
 
             if self.kv_heads is None or cache is not None:
                 result = layer(
