@@ -22,7 +22,7 @@ from sdm.tensor import (
     ColumnarTensor,
     TableTensor,
 )
-from sdm.ensemble import EnsembleData, EnsembleTensor, EnsembleTable
+from sdm.ensemble import EnsembleData, EnsembleTensor, EnsembleTable, TableLike
 from sdm.relational import (
     Relationship,
     RelationalData,
@@ -30,6 +30,7 @@ from sdm.relational import (
     RelatedTables,
 )
 from sdm.processing import Recipe
+from sdm import prior
 import sdm.models as models
 import sdm.evaluation as evaluation
 import sdm.explain as explain
@@ -55,11 +56,13 @@ __all__ = [
     "EnsembleData",
     "EnsembleTensor",
     "EnsembleTable",
+    "TableLike",
     "Relationship",
     "RelationalData",
     "TaskLink",
     "RelatedTables",
     "Recipe",
+    "prior",
     "models",
     "evaluation",
     "explain",

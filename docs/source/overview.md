@@ -41,10 +41,10 @@ table = sdm.TableTensor.from_pandas(
 
 Models then consume these tensor containers through a shared in-context learning interface.
 Available model implementations are listed in [`sdm.models`](api/models).
-Each model supports direct one-shot {py:meth}`~sdm.models.ICLModel.forward` calls and cached {py:meth}`~sdm.models.ICLModel.fit`/{py:meth}`~sdm.models.ICLModel.predict` execution for efficient context reuse:
+Each {py:class}`~sdm.models.ICLModel` supports direct one-shot {py:meth}`~sdm.models.ICLModel.forward` calls and cached {py:meth}`~sdm.models.ICLModel.fit`/{py:meth}`~sdm.models.ICLModel.predict` execution for efficient context reuse:
 
 ```python
-model = sdm.models.TabICLv2(device="cuda")
+model = sdm.models.KumoTabular(device="cuda")
 
 out = model(
     x_context=table[:300].drop_columns("target"),
@@ -107,7 +107,7 @@ These components are reusable across model families rather than tied to a single
 
 For relational tasks, {py:class}`~sdm.relational.RelatedTables` allow foundation models to attach to surrounding tables and relationships.
 A model that {py:attr}`~sdm.models.ICLModel.supports_related_tables`, such as {py:class}`~sdm.models.KumoRelational`, can process these {py:class}`~sdm.relational.RelatedTables` through the same {py:meth}`~sdm.models.ICLModel.forward`, {py:meth}`~sdm.models.ICLModel.fit`, {py:meth}`~sdm.models.ICLModel.predict`, {py:class}`~sdm.processing.recipe.Recipe`, and {py:class}`~sdm.tensor.TableTensor` interfaces.
-See [here](relational-context) for the accompanying guide.
+See {ref}`relational-context` for the accompanying guide.
 
 Time series forecasting models such as {py:class}`~sdm.models.Chronos2` and {py:class}`~sdm.models.TimesFM3` use the same in-context learning interface: context rows represent the observed past, and query rows represent future time steps.
 See the [time series forecasting](forecasting) guide for how to represent these inputs with {py:class}`~sdm.tensor.TableTensor`, how to jointly forecast multiple targets, and how to use past-only and known future covariates to inform the prediction.

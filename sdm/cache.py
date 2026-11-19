@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import abc
 from collections.abc import (
     Callable,
     Hashable,
@@ -22,22 +23,76 @@ from sdm.tensor.mixin import DeviceMixin
 class _KVCacheEntry(NamedTuple):
     key: Tensor
     value: Tensor
+    key_scale: Tensor | None = None
+    value_scale: Tensor | None = None
 
 
 class KVCacheEntry(_KVCacheEntry, DeviceMixin):
     r"""Cached key/value projections for a single transformer block.
 
     Args:
-        key: Cached key projection tensor.
-        value: Cached value projection tensor.
+        key: Key projections with shape ``[..., KV, H, C]``.
+        value: Value projections with shape ``[..., KV, H, C]``.
+        key_scale: Optional scales broadcastable to ``key``.
+        value_scale: Optional scales broadcastable to ``value``.
     """
 
     def _tensors(self) -> Iterator[Tensor]:
         yield self.key
         yield self.value
+        if self.key_scale is not None:
+            yield self.key_scale
+        if self.value_scale is not None:
+            yield self.value_scale
 
     def _apply_tensor(self, fn: Callable[[Tensor], Tensor]) -> Self:
-        return self.__class__(key=fn(self.key), value=fn(self.value))
+        return self.__class__(
+            key=fn(self.key),
+            value=fn(self.value),
+            key_scale=None if self.key_scale is None else fn(self.key_scale),
+            value_scale=None
+            if self.value_scale is None
+            else fn(self.value_scale),
+        )
+
+
+class KVCacheDType(abc.ABC):
+    r"""Base class for the storage dtype of cached key/value projections."""
+
+    @abc.abstractmethod
+    def quantize(self, entry: KVCacheEntry) -> KVCacheEntry:
+        r"""Returns ``entry`` in this storage dtype.
+
+        Args:
+            entry: Key/value projections as computed by attention.
+        """
+
+    @abc.abstractmethod
+    def dequantize(
+        self,
+        entry: KVCacheEntry,
+        dtype: torch.dtype,
+    ) -> KVCacheEntry:
+        r"""Returns ``entry`` with key/value projections in ``dtype``.
+
+        Args:
+            entry: Key/value projections in this storage dtype.
+            dtype: The target dtype.
+        """
+
+
+class Unquantized(KVCacheDType):
+    r"""Stores key/value projections as computed."""
+
+    def quantize(self, entry: KVCacheEntry) -> KVCacheEntry:  # noqa: D102
+        return entry
+
+    def dequantize(  # noqa: D102
+        self,
+        entry: KVCacheEntry,
+        dtype: torch.dtype,
+    ) -> KVCacheEntry:
+        return entry
 
 
 class Cache(MutableMapping[Hashable, object], DeviceMixin):
@@ -65,6 +120,8 @@ class Cache(MutableMapping[Hashable, object], DeviceMixin):
         **kwargs: object,
     ) -> None:
         self._mode = Cache.Mode.record
+        # TODO: Support different dtypes given str in kwargs:
+        self._kv_cache_dtype: KVCacheDType = Unquantized()
         self._items: dict[Hashable, object] = dict(*args, **kwargs)
 
     @property
@@ -107,6 +164,8 @@ class Cache(MutableMapping[Hashable, object], DeviceMixin):
             raise RuntimeError(
                 "'__setitem__' requires the cache to be in 'record' mode"
             )
+        if isinstance(value, KVCacheEntry):
+            value = self._kv_cache_dtype.quantize(value)
         self._items[key] = value
 
     def __delitem__(self, key: Hashable) -> None:
@@ -196,5 +255,6 @@ class Cache(MutableMapping[Hashable, object], DeviceMixin):
         out = self.__class__(
             {key: _apply(value) for key, value in self.items()}
         )
+        out._kv_cache_dtype = self._kv_cache_dtype
         out._mode = self._mode
         return out

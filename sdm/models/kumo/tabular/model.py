@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any, ClassVar, Literal, cast
 
 import torch
@@ -64,9 +64,9 @@ MODEL_KWARGS: dict[str, dict[str, Any]] = {
 
 
 class KumoTabular(ICLModel):
-    r"""The tabular foundation model from `"NVIDIA Kumo Tabular Sets a New
-    Accuracy-Efficiency Frontier for Tabular Prediction"
-    <https://huggingface.co/blog/nvidia/kumo-tabular>`__.
+    r"""The tabular foundation model from the `"NVIDIA Kumo Tabular: Pushing
+    the Accuracy-Efficiency Frontier for Tabular Prediction"
+    <https://arxiv.org/abs/2611.23001>`__ paper.
 
     .. figure:: /images/kumo_tabular.svg
         :width: 100%
@@ -89,9 +89,6 @@ class KumoTabular(ICLModel):
     rows. The ``"large"`` model widens this transformer to 1024 channels and
     16 attention heads. Its four 256-channel readout tokens concatenate
     directly to that width without a projection layer.
-
-    For regression tasks, :class:`KumoTabular` predicts 999 quantiles named
-    ``"q001"`` through ``"q999"``.
 
     Args:
         task: The tasks to initialize. If ``None``, all tasks supported by this
@@ -118,6 +115,31 @@ class KumoTabular(ICLModel):
     supports_multi_target: ClassVar[bool] = False
     supports_context_only_columns: ClassVar[bool] = False
     supports_related_tables: ClassVar[bool] = False
+
+    paper: ClassVar[str] = "https://arxiv.org/abs/2611.23001"
+    source: ClassVar[str] = (
+        "https://github.com/NVIDIA/structured-data-models/tree/main/sdm/models/kumo/tabular"
+    )
+    release_date: ClassVar[str] = "2026-09-28"
+    parameter_count: ClassVar[str] = "27.46M-215.68M"
+    code_license: ClassVar[tuple[str, str]] = (
+        "Apache-2.0",
+        "https://github.com/NVIDIA/structured-data-models/blob/main/LICENSE",
+    )
+    weights_license: ClassVar[tuple[str, str]] = (
+        "OpenMDW-1.1",
+        "https://huggingface.co/nvidia/Kumo-Tabular/blob/main/LICENSE",
+    )
+    metadata: ClassVar[Mapping[str, str]] = {
+        "Classification Output": (
+            "Class probabilities; ECOC for more than 10 classes"
+        ),
+        "Regression Output": (
+            '999 quantiles named ``"q001"`` through ``"q999"``'
+        ),
+        "Missing Values": "Handled natively",
+        "Pretraining Scope": "Up to 60,000 rows and 100 columns",
+    }
 
     def __init__(
         self,
@@ -152,7 +174,13 @@ class KumoTabular(ICLModel):
 
     @classmethod
     def default_recipe(cls) -> Recipe:
-        r""":meta private:"""  # noqa: D415
+        r"""
+        .. warning::
+            Each estimator uses at most 500 columns. For wide tables, some
+            columns may remain unused across the ensemble.
+            Use at least ``ceil(num_columns / 500)`` estimators to make full
+            coverage possible.
+        """  # noqa: D212
         return default_recipe()
 
     def _load_from_pretrained(

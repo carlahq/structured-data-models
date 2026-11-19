@@ -7,7 +7,7 @@ from typing import Generic, Literal, NamedTuple, Self, TypeVar, cast
 import torch
 from torch import Tensor
 
-from sdm import ColumnarTensor, EnsembleTable, Stype, TableTensor
+from sdm import ColumnarTensor, EnsembleTable, Stype, TableLike, TableTensor
 from sdm.relational import (
     RelatedTables,
     RelationalData,
@@ -20,7 +20,7 @@ from sdm.relational.backend import (
 )
 from sdm.tensor.mixin import DeviceMixin
 
-T = TypeVar("T", bound=TableTensor | EnsembleTable)
+T = TypeVar("T", bound=TableLike)
 
 EXAMPLE_ID = "__example__"
 
@@ -111,16 +111,17 @@ class RelationalSampler:
         r"""Sample :class:`RelatedTables` for task rows.
 
         Args:
-            num_neighbors: Number of neighbors to sample per hop.
             task_table: Task table whose rows define the sampling queries.
             task_link: Link from ``task_table`` rows to a table in the
                 relational data.
+            num_neighbors: Number of neighbors to sample per hop.
             task_time_column: Datetime column in ``task_table`` used as the
                 query timestamp for temporal sampling.
             temporal_strategy: How temporal neighbors are selected. ``"last"``
                 selects the most recent neighbors before each seed timestamp.
                 ``"uniform"`` samples uniformly from neighbors before each seed
-                timestamp.
+                timestamp. CUDA sampling currently falls back from ``"last"``
+                to ``"uniform"`` with a warning.
         """
         if not isinstance(task_link, TaskLink):
             task_link = TaskLink.from_mapping(task_link)
@@ -175,7 +176,7 @@ class RelationalSampler:
             temporal_strategy=temporal_strategy,
         )
 
-        tables: dict[str, TableTensor | EnsembleTable] = {}
+        tables: dict[str, TableLike] = {}
         for table_name, (example, index) in nodes.items():
             table = torch.cat(
                 [

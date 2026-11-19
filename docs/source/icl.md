@@ -45,7 +45,7 @@ table = sdm.TableTensor.from_pandas(
     device="cuda",
 )
 
-model = sdm.models.TabICLv2(device="cuda")
+model = sdm.models.KumoTabular(device="cuda")
 out = model(
     x_context=table[:300].drop_columns("target"),
     y_context=table[:300, "target"],
@@ -137,18 +137,38 @@ with torch.amp.autocast("cuda", dtype=torch.float16):
 Preprocessing and postprocessing routines remain outside the model’s autocast policy.
 They will run with the dtypes of the model inputs.
 
+## Context Selection
+
+The context determines which labeled examples the model can use for prediction.
+Its size and composition affect accuracy, memory use, and latency.
+Using all available training rows as context is generally preferred, but may exceed your memory or latency budget.
+When a smaller context is needed, useful selection strategies include:
+
+- **Random sampling:** Use a representative subset as a baseline.
+- **Stratified sampling:** Preserve class proportions or ensure rare classes are represented.
+  If sampling changes class proportions, evaluate probability calibration on data with the expected deployment distribution.
+- **Recency windows:** For changing data distributions, select examples from the period most relevant to the queries.
+- **Retrieval:** Select relevant examples for each query, such as nearest neighbors.
+  Query-specific contexts reduce opportunities to reuse cached context state.
+- **Context ensembling:** Predict from several context samples and combine their predictions.
+  This reduces the size of each context but increases total inference work.
+
+Choose the strategy and context size using validation data, and include only labels that would be available at prediction time.
+
 ## Embeddings
 
 Intermediate embeddings of an {py:class}`~sdm.models.ICLModel` can be captured by attaching a standard PyTorch hook at any child module, *e.g.*, via {py:meth}`torch.nn.Module.register_forward_pre_hook`.
 For example, the following snippet records the query embeddings passed into the {py:class}`~sdm.models.TabICLv2` classification head:
 
 ```python
-def _embedding(_module: torch.nn.Module, args: tuple[Tensor, ...]) -> None:
-    query_embedding = args[0]
+embeddings: list[torch.Tensor] = []
+
+def embedding(_module: torch.nn.Module, args: tuple[torch.Tensor, ...]) -> None:
+    embeddings.append(args[0])
 
 model = sdm.models.TabICLv2()
 head = model.models["classification"].icl_block.head
-handle = head.register_forward_pre_hook(_embedding)
+handle = head.register_forward_pre_hook(embedding)
 ```
 
 Such embeddings can be used for downstream analysis, such as clustering, retrieval, or similarity search.
@@ -205,7 +225,10 @@ related_context_tables = sdm.RelatedTables(
             device="cuda",
         ),
         "orders": sdm.TableTensor.from_columns(
-            {"user_id": [0, 0, 1, 3, 3, 3], "amount": [9.99, 4.99, ...]},
+            {
+                "user_id": [0, 0, 1, 3, 3, 3],
+                "amount": [9.99, 4.99, 15.0, 7.5, 12.0, 3.99],
+            },
             stypes={"user_id": "id", "amount": "numerical"},
             device="cuda",
         ),

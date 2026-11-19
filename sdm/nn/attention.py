@@ -11,6 +11,8 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.nn import Linear
 
+from sdm._kernels.flash_attention import flash_attention
+from sdm._kernels.sdpa import sdpa
 from sdm._memory import chunk_memory_limit
 from sdm.cache import KVCacheEntry
 from sdm.nn import QueryScaling
@@ -36,6 +38,9 @@ class SDPA(torch.nn.Module):
             :func:`torch.nn.functional.scaled_dot_product_attention`.
             ``None`` uses the default value of ``1 / sqrt(channels)``.
         dropout: Attention dropout probability.
+        backend: ``"sdpa"`` (default) or ``"fa3"`` for FlashAttention-3 on
+            Hopper with FP16/BF16 inputs. General masks, causal attention,
+            and attention dropout use SDPA with either setting.
     """
 
     def __init__(
@@ -45,6 +50,7 @@ class SDPA(torch.nn.Module):
         query_scaling: QueryScaling | None = None,
         scale: float | None = None,
         dropout: float = 0.0,
+        backend: Literal["sdpa", "fa3"] = "sdpa",
     ) -> None:
         super().__init__()
         if num_key_value_heads is None:
@@ -60,6 +66,7 @@ class SDPA(torch.nn.Module):
         self.query_scaling = query_scaling
         self.scale = scale
         self.dropout = dropout
+        self.backend = backend
 
     def forward(
         self,
@@ -169,6 +176,22 @@ class SDPA(torch.nn.Module):
         key = key.expand(batch_shape + key_size).reshape(-1, *key_size)
         value = value.expand(batch_shape + value_size).reshape(-1, *value_size)
 
+        if (
+            self.backend == "fa3"
+            and attn_mask is None
+            and not is_causal
+            and (not self.training or self.dropout == 0.0)
+        ):
+            lengths = (
+                None
+                if seqused_key_value is None
+                else seqused_key_value.expand(batch_shape).reshape(-1)
+            )
+            out = flash_attention(
+                query, key, value, lengths=lengths, scale=self.scale
+            )
+            return out.view(batch_shape + out.size()[-3:])
+
         if attn_mask is not None:
             attn_mask = attn_mask.expand(batch_shape + attn_mask.size()[-3:])
             attn_mask = attn_mask.reshape(-1, *attn_mask.size()[-3:])
@@ -189,27 +212,16 @@ class SDPA(torch.nn.Module):
         key = key.transpose(-3, -2)  # [B, Hkv, KV, C]
         value = value.transpose(-3, -2)  # [B, Hkv, KV, C]
 
-        # CUDA attention kernels accept at most 65,535 batch entries per call.
-        outs = [
-            F.scaled_dot_product_attention(
-                query=query[i : i + 65_535],
-                key=key[i : i + 65_535],
-                value=value[i : i + 65_535],
-                attn_mask=None
-                if attn_mask is None
-                else attn_mask[i : i + 65_535],  # [B, Hq, Q, KV]
-                dropout_p=self.dropout if self.training else 0.0,
-                enable_gqa=enable_gqa,
-                is_causal=is_causal,
-                scale=self.scale,
-            ).transpose(-3, -2)  # [B, Q, Hq, C]
-            for i in (
-                (0,)
-                if query.size(0) <= 65_535
-                else range(0, query.size(0), 65_535)
-            )
-        ]
-        out = outs[0] if len(outs) == 1 else torch.cat(outs)
+        out = sdpa(
+            query,
+            key,
+            value,
+            attn_mask,  # [B, Hq, Q, KV]
+            self.dropout if self.training else 0.0,
+            enable_gqa,
+            is_causal,
+            self.scale,
+        )  # [B, Q, Hq, C]
 
         return out.view(batch_shape + out.size()[-3:])  # [..., Q, Hq, C]
 
@@ -624,7 +636,8 @@ class TransformerBlock(torch.nn.Module):
             return_key_value: Whether to return the computed key and value
                 projections alongside the block output.
             batch_size_limit: Maximum number of batch elements processed at
-                once.
+                once. Only an integer limit applies in compiled code, which
+                would otherwise recompile when the number of chunks changes.
             out: The output tensor.
 
         Returns:
@@ -646,7 +659,10 @@ class TransformerBlock(torch.nn.Module):
                 "already cached"
             )
 
-        if torch.is_grad_enabled():
+        if torch.is_grad_enabled() or (
+            not isinstance(batch_size_limit, int)
+            and torch.compiler.is_dynamo_compiling()
+        ):
             return self._forward(
                 query=query,
                 key_value=key_value,

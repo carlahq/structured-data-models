@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import torch
@@ -78,6 +79,26 @@ class KumoForecast(ICLModel):
     supports_multi_target: ClassVar[bool] = True
     supports_context_only_columns: ClassVar[bool] = True
     supports_related_tables: ClassVar[bool] = False
+
+    paper: ClassVar[str] = (
+        "https://ieeexplore.ieee.org/abstract/document/11402442"
+    )
+    source: ClassVar[str] = "https://github.com/NVIDIA/Kumo-TS"
+    release_date: ClassVar[str] = "2026-04-07"
+    parameter_count: ClassVar[str] = "313.06M-317.26M"
+    code_license: ClassVar[tuple[str, str]] = (
+        "Apache-2.0",
+        "https://github.com/NVIDIA/structured-data-models/blob/main/LICENSE",
+    )
+    weights_license: ClassVar[tuple[str, str]] = (
+        "Apache-2.0",
+        "https://huggingface.co/nvidia/Kumo-Forecast",
+    )
+    metadata: ClassVar[Mapping[str, str]] = {
+        "Output": "Point predictions per target and time step",
+        "Missing Values": "Zero imputation in the default recipe",
+        "Pretraining Scope": "Up to 512 rows",
+    }
 
     def __init__(
         self,
@@ -180,6 +201,12 @@ class KumoForecast(ICLModel):
                 f"Expected 'alpha' between zero and one (got {alpha})"
             )
 
+        if y_context.size(-2) < self.model.context_size:
+            raise ValueError(
+                f"Expected at least {self.model.context_size} context rows "
+                f"(got {y_context.size(-2)})"
+            )
+
         horizon = x_query.size(-2)
         context_size = self.model.context_size
         prediction_size = self.model.prediction_size
@@ -205,12 +232,6 @@ class KumoForecast(ICLModel):
 
         # Forecast:
         last_x = x[..., -self.model.context_size :]
-        if last_x.size(-1) < context_size:
-            last_x = torch.nn.functional.pad(
-                last_x,
-                pad=(context_size - last_x.size(-1), 0),
-                value=float("nan"),
-            )
         encoded, mean, scale = self.model.encode(last_x)  # [..., C, P, D]
         out = self.model.decode(encoded, mean, scale)
 
